@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Serverless Contact Application - save + get contacts
+
+Resources:
+  # -------------------------------
+  # DynamoDB table
+  # -------------------------------
+  ContactTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ContactTable
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # -------------------------------
+  # IAM Role for Lambdas
+  # -------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaDynamoDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !GetAtt ContactTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+
+  # -------------------------------
+  # Lambda: Save Contact (POST)
+  # -------------------------------
+  SaveContactFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SaveContactFunction
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import uuid
+
+          def lambda_handler(event, context):
+              dynamodb = boto3.resource('dynamodb')
+              table = dynamodb.Table('ContactTable')
+
+              body = json.loads(event.get('body') or '{}')
+              name = body.get('name')
+              email = body.get('email')
+
+              if not name or not email:
+                  return {'statusCode': 400, 'body': json.dumps({'message': 'Name and email required'})}
+
+              contact_id = str(uuid.uuid4())
+              table.put_item(Item={
+                  'id': contact_id,
+                  'name': name,
+                  'email': email
+              })
+
+              return {'statusCode': 201, 'body': json.dumps({'message': 'Contact saved successfully', 'id': contact_id})}
+
+  # -------------------------------
+  # Lambda: Get Contacts (GET)
+  # -------------------------------
+  GetContactsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetContactsFunction
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+
+          def lambda_handler(event, context):
+              dynamodb = boto3.resource('dynamodb')
+              table = dynamodb.Table('ContactTable')
+
+              try:
+                  response = table.scan()
+                  items = response.get('Items', [])
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(items)
+                  }
+              except Exception as e:
+                  print(e)
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'message': 'Internal error'})
+                  }
+
+  # -------------------------------
+  # API Gateway
+  # -------------------------------
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ContactApi
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: contact
+      RestApiId: !Ref ApiGateway
+
+  # POST method
+  ApiMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SaveContactFunction.Arn}/invocations
+
+  # GET method
+  ApiMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetContactsFunction.Arn}/invocations
+
+  # -------------------------------
+  # Permissions for API Gateway
+  # -------------------------------
+  SaveLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SaveContactFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*
+
+  GetLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GetContactsFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*
+
+  # -------------------------------
+  # Deployment
+  # -------------------------------
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiMethodPost
+      - ApiMethodGet
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: prod
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the API
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/contact

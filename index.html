@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Contact App (Serverless)</title>
+</head>
+<body>
+  <h1>Contact App (Serverless)</h1>
+
+  <!-- Form för att lägga till kontakt -->
+  <h3>Lägg till kontakt</h3>
+  <input type="text" id="name" placeholder="Name">
+  <input type="email" id="email" placeholder="Email">
+  <button onclick="addContact()">Save</button>
+
+  <h3>Alla kontakter</h3>
+  <button onclick="getContacts()">Load Contacts</button>
+  <ul id="contactList"></ul>
+
+  <script>
+    // Din API Gateway-länk
+    const apiUrl = "https://x5tuak8tib.execute-api.eu-west-1.amazonaws.com/prod/contact";
+
+    // POST – spara en kontakt
+    async function addContact() {
+      const name = document.getElementById("name").value;
+      const email = document.getElementById("email").value;
+
+      if (!name || !email) {
+        alert("Fyll i både namn och email!");
+        return;
+      }
+
+      try {
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, email })
+        });
+
+        const data = await response.json();
+        alert("Saved: " + JSON.stringify(data));
+
+        // töm inputfält efter sparad kontakt
+        document.getElementById("name").value = "";
+        document.getElementById("email").value = "";
+
+        // ladda om listan direkt
+        await getContacts();
+      } catch (err) {
+        alert("Kunde inte spara kontakten.");
+        console.error(err);
+      }
+    }
+
+    // GET – hämta alla kontakter
+    async function getContacts() {
+      try {
+        const resp = await fetch(apiUrl, { method: "GET" });
+        const contacts = await resp.json(); // redan en array
+
+        const list = document.getElementById("contactList");
+        list.innerHTML = "";
+
+        contacts.forEach(c => {
+          const li = document.createElement("li");
+          li.textContent = `${c.name} (${c.email})`;
+          list.appendChild(li);
+        });
+      } catch (err) {
+        alert("Kunde inte hämta kontakter.");
+        console.error(err);
+      }
+    }
+  </script>
+</body>
+</html>
